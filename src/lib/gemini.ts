@@ -15,7 +15,7 @@
 import type { Hit } from './search'
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta'
-export const GEMINI_MODEL = 'gemini-2.5-flash'
+export const GEMINI_MODEL = 'gemini-3.6-flash'
 const KEY_STORE = 'topik-chatbot.gemini-key'
 
 export function getKey(): string {
