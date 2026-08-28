@@ -10,15 +10,32 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { pipeline } from '@huggingface/transformers'
 import { buildBm25Index, search } from '../src/lib/search.ts'
-import { gate, health, GATE_K } from '../src/lib/ollama.ts'
+import { gate, health, GATE_K, GATE_SYSTEM } from '../src/lib/ollama.ts'
+import * as gemini from '../src/lib/gemini.ts'
+import { existsSync } from 'node:fs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const store = JSON.parse(readFileSync(resolve(ROOT, 'public/vectorstore.json'), 'utf8'))
 const evalSet = JSON.parse(readFileSync(resolve(ROOT, 'eval/questions.json'), 'utf8'))
 
-const h = await health()
-if (!h.ok) { console.error(h.reason); process.exit(1) }
-console.log(`Ollama ${h.version} · 모델 ${h.hasModel ? '있음' : '없음'}\n`)
+// 엔진 선택 — 1층 범위 규칙은 결정적이라 엔진과 무관하다. 2층 게이트만 달라진다.
+//   node scripts/eval-gate.mjs            로컬
+//   node scripts/eval-gate.mjs gemini     선택 엔진
+const ENGINE = process.argv[2] === 'gemini' ? 'gemini' : 'local'
+
+let KEY = ''
+if (ENGINE === 'gemini') {
+  const f = resolve(ROOT, '.env.local')
+  KEY =
+    process.env.GEMINI_API_KEY?.trim() ||
+    (existsSync(f) ? readFileSync(f, 'utf8').match(/^\s*GEMINI_API_KEY\s*=\s*(.+)\s*$/m)?.[1].trim() ?? '' : '')
+  if (!KEY) { console.error('.env.local 에 GEMINI_API_KEY 가 필요합니다.'); process.exit(1) }
+  console.log(`엔진: Gemini ${gemini.GEMINI_MODEL} (키 ${KEY.slice(0, 4)}…)\n`)
+} else {
+  const h = await health()
+  if (!h.ok) { console.error(h.reason); process.exit(1) }
+  console.log(`엔진: 로컬 Ollama ${h.version} · 모델 ${h.hasModel ? '있음' : '없음'}\n`)
+}
 
 // 범위 안처럼 보이지만 자료에 답이 없는 질문 (봉인 세트 아님 — 진단용)
 const UNANSWERABLE = [
@@ -36,7 +53,10 @@ async function ask(q) {
   const out = await embed(`query: ${q}`, { pooling: 'mean', normalize: true })
   const r = search(store.chunks, index, q, Array.from(out.data))
   if (r.verdict === 'refuse') return { layer: 1, answerable: false, raw: r.reason }
-  const g = await gate(q, r.hits.slice(0, GATE_K))
+  const hits = r.hits.slice(0, GATE_K)
+  const g = ENGINE === 'gemini'
+    ? await gemini.gate(q, hits, GATE_SYSTEM, { key: KEY })
+    : await gate(q, hits)
   return { layer: 2, ...g }
 }
 

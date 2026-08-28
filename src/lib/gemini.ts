@@ -84,6 +84,13 @@ export async function gate(
       generationConfig: { temperature: 0, maxOutputTokens: 500 },
     }),
   })
+  // 429 는 무료 등급의 분당 요청 한도다. 실패로 끝내지 않고 기다렸다 다시 부른다 —
+  // 25문항을 연속으로 돌리면 반드시 만난다.
+  if (res.status === 429) {
+    const wait = Number(res.headers.get('retry-after') ?? 20) * 1000
+    await new Promise((r) => setTimeout(r, wait))
+    return gate(question, hits, system, opts)
+  }
   if (!res.ok) throw new Error(`Gemini 게이트 실패 (${res.status})`)
   const raw = ((await res.json())?.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim()
   const yes = raw.search(/yes/i)
