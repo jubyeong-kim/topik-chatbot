@@ -6,7 +6,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { load, type LoadProgress, type Store } from './lib/embed'
 import { buildBm25Index, search, type Hit, type SearchResult } from './lib/search'
-import { answer, gate, health, ANSWER_K, GATE_K, type Health } from './lib/ollama'
+import { answer, gate, health, answerSystem, GATE_SYSTEM, ANSWER_K, GATE_K, MODEL, type Health } from './lib/ollama'
+import * as gemini from './lib/gemini'
 import { judge, type JudgeResult } from './lib/judge'
 import { load as loadFeedback, save as saveFeedback, summary as feedbackSummary } from './lib/feedback'
 
@@ -39,6 +40,10 @@ export default function App() {
   const [openChunk, setOpenChunk] = useState<Hit | null>(null)   // 근거 모달
   const [rated, setRated] = useState(false)                       // 이 답변에 피드백했는가
   const [fb, setFb] = useState(() => feedbackSummary(loadFeedback()))
+  const [engine, setEngine] = useState<'local' | 'gemini'>('local')
+  const [keyInput, setKeyInput] = useState(() => gemini.getKey())
+  const [keyMsg, setKeyMsg] = useState<string | null>(null)
+  const [elapsed, setElapsed] = useState<number | null>(null)
   const abort = useRef<AbortController | null>(null)
 
   useEffect(() => { void health().then(setSrv) }, [])
@@ -53,7 +58,7 @@ export default function App() {
 
   async function run(text: string) {
     if (!text.trim() || busy) return
-    setError(null); setResult(null); setReply(''); setRefusal(null); setVerdict(null); setRated(false)
+    setError(null); setResult(null); setReply(''); setRefusal(null); setVerdict(null); setRated(false); setElapsed(null)
     const ac = new AbortController()
     abort.current = ac
 
@@ -75,7 +80,10 @@ export default function App() {
       // 체감 대기가 절반이 되고, 생성은 8개를 다 받아 근거를 놓치지 않는다.
       const forGate = found.hits.slice(0, GATE_K)
       const forAnswer = found.hits.slice(0, ANSWER_K)
-      const g = await gate(text, forGate, { signal: ac.signal })
+      const t0 = performance.now()
+      const g = engine === 'gemini'
+        ? await gemini.gate(text, forGate, GATE_SYSTEM, { signal: ac.signal })
+        : await gate(text, forGate, { signal: ac.signal })
       if (!g.answerable) {
         setRefusal('검색된 자료에 이 질문의 답이 없습니다')
         return
@@ -83,10 +91,14 @@ export default function App() {
 
       setBusy('작성')
       let full = ''
-      for await (const piece of answer(text, forAnswer, { signal: ac.signal, weak: found.verdict === 'weak' })) {
+      const stream = engine === 'gemini'
+        ? gemini.answer(text, forAnswer, answerSystem(found.verdict === 'weak'), { signal: ac.signal })
+        : answer(text, forAnswer, { signal: ac.signal, weak: found.verdict === 'weak' })
+      for await (const piece of stream) {
         full += piece
         setReply(full)
       }
+      setElapsed(Math.round(performance.now() - t0))
 
       // 판정은 답변이 끝난 뒤. 실패해도 답변과 출처는 그대로 둔다.
       setBusy('판정')
@@ -130,7 +142,21 @@ export default function App() {
         )}
       </form>
 
-      {srv && !srv.ok && (
+      <EnginePicker
+        engine={engine}
+        onPick={setEngine}
+        keyInput={keyInput}
+        setKeyInput={setKeyInput}
+        keyMsg={keyMsg}
+        onSaveKey={async () => {
+          setKeyMsg('확인 중…')
+          const r = await gemini.check(keyInput.trim())
+          if (r.ok) { gemini.setKey(keyInput.trim()); setKeyMsg('키를 저장했습니다. 이 브라우저에만 남습니다.') }
+          else setKeyMsg(r.reason)
+        }}
+      />
+
+      {engine === 'local' && srv && !srv.ok && (
         <p style={{ marginTop: 14, padding: '10px 14px', borderRadius: 8, background: 'var(--warn-bg)', color: 'var(--warn)', fontSize: 14 }} role="alert">
           {srv.reason}{' '}
           <button
@@ -191,6 +217,12 @@ export default function App() {
           {reply}
           {busy === '작성' && <span style={{ color: 'var(--muted)' }}>▌</span>}
         </section>
+      )}
+
+      {elapsed !== null && (
+        <p style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
+          {engine === 'gemini' ? gemini.GEMINI_MODEL : MODEL} · 게이트+생성 {(elapsed / 1000).toFixed(1)}초
+        </p>
       )}
 
       {verdict && <Judgement result={verdict} />}
@@ -422,6 +454,67 @@ function Feedback({
             <b style={{ color: 'var(--warn)' }}> · 자동 판정과 어긋남 {summary.mismatch}건</b>
           )}
         </span>
+      )}
+    </section>
+  )
+}
+
+/**
+ * 엔진 선택. (PRD v3 §9-B)
+ *
+ * 기본은 항상 로컬이다. Gemini 를 켜면 **질문과 근거 청크가 Google 로 나간다** —
+ * PRD §1 의 "외부 데이터 유출 없는 구조" 전제가 그 순간 깨지므로 화면에 계속 밝힌다.
+ *
+ * 🔑 키는 사용자가 넣고 그 브라우저에만 남는다. 저장소에도 번들에도 들어가지 않는다.
+ *    정적 사이트는 서버가 없어 키를 숨길 곳이 없기 때문이다.
+ */
+function EnginePicker({
+  engine, onPick, keyInput, setKeyInput, keyMsg, onSaveKey,
+}: {
+  engine: 'local' | 'gemini'
+  onPick: (e: 'local' | 'gemini') => void
+  keyInput: string
+  setKeyInput: (v: string) => void
+  keyMsg: string | null
+  onSaveKey: () => void
+}) {
+  return (
+    <section style={{ marginTop: 14, fontSize: 13 }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ color: 'var(--muted)' }}>답변 엔진</span>
+        {(['local', 'gemini'] as const).map((e) => (
+          <label key={e} style={{ display: 'flex', gap: 5, alignItems: 'center', cursor: 'pointer' }}>
+            <input type="radio" name="engine" checked={engine === e} onChange={() => onPick(e)} />
+            {e === 'local' ? '로컬 Ollama (기본)' : 'Gemini API'}
+          </label>
+        ))}
+      </div>
+
+      {engine === 'gemini' && (
+        <div style={{ marginTop: 10, padding: '12px 14px', border: '1px solid var(--warn)', borderRadius: 8, background: 'var(--warn-bg)' }}>
+          <p style={{ margin: 0, color: 'var(--warn)' }}>
+            <b>이 엔진을 쓰면 질문과 검색된 근거 청크가 Google 서버로 전송됩니다.</b><br />
+            로컬 Ollama 를 쓸 때는 아무것도 밖으로 나가지 않습니다.
+          </p>
+          <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+            <input
+              type="password"
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              placeholder="본인의 Gemini API 키"
+              autoComplete="off"
+              style={{ flex: 1, minWidth: 200, padding: '7px 10px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--bg)', color: 'var(--fg)' }}
+            />
+            <button onClick={onSaveKey} style={{ padding: '7px 14px', borderRadius: 6, border: '1px solid var(--line)', background: 'transparent', color: 'inherit', cursor: 'pointer' }}>
+              확인 후 저장
+            </button>
+          </div>
+          {keyMsg && <p style={{ margin: '8px 0 0', fontSize: 12 }}>{keyMsg}</p>}
+          <p style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--muted)' }}>
+            키는 <b>이 브라우저에만</b> 저장됩니다. 저장소·배포 파일 어디에도 들어가지 않습니다.
+            키 발급은 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--official)' }}>Google AI Studio ↗</a>
+          </p>
+        </div>
       )}
     </section>
   )

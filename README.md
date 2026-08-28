@@ -39,6 +39,20 @@ setx OLLAMA_ORIGINS "https://jubyeong-kim.github.io"
 
 - **Chrome · Edge 권장.** Safari 는 https 페이지에서 `http://localhost` 를 mixed content 로 차단합니다
 
+### 또는 — Gemini API 를 켜면 설치 없이도 답변이 나옵니다
+
+화면의 **답변 엔진**에서 `Gemini API` 를 고르고 본인 키를 넣으면 Ollama 없이도 답변이 생성됩니다.
+
+⚠️ **켜면 질문과 근거 청크가 Google 서버로 나갑니다.** 로컬 Ollama 를 쓸 때는 아무것도 나가지 않습니다.
+어느 쪽인지 화면에 계속 표시됩니다.
+
+🔑 **키는 이 저장소에도 배포 파일에도 들어 있지 않습니다.** 사용자가 직접 넣고 그 브라우저에만 남습니다.
+정적 사이트는 서버가 없어 키를 숨길 곳이 없으므로, 번들에 키를 넣는 방식은 쓰지 않았습니다.
+키 발급: [Google AI Studio](https://aistudio.google.com/apikey)
+
+두 엔진은 **같은 프롬프트와 같은 근거 개수**를 씁니다. 다르면 엔진 비교가 아니라 프롬프트 비교가 됩니다.
+답변 아래에 `엔진명 · 게이트+생성 N초` 가 표시되어 응답 리듬을 비교할 수 있습니다.
+
 ---
 
 ## 무엇을 보여주려고 만들었나

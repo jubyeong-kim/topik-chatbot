@@ -54,7 +54,7 @@ function evidence(hits: Hit[]): string {
 // ⚠️ 출력 어휘를 바꾸지 말 것. 모델은 프롬프트에 쓰인 낱말을 그대로 따라 한다.
 //    "answerable = true/false" 로 적었더니 모델이 그 문자열을 뱉어 파싱이 전부 깨졌다.
 //    판정 기준은 PRD §1("공개 자료에 근거해 답한다")을 따르되, 출력은 YES/NO 로 고정한다.
-const GATE_SYSTEM = `당신은 자료 검토자입니다. 답을 만들지 마십시오.
+export const GATE_SYSTEM = `당신은 자료 검토자입니다. 답을 만들지 마십시오.
 주어진 자료만 보고, 질문에 답할 근거가 자료 안에 있는지만 판단합니다.
 
 YES: 자료에 적힌 내용만으로 질문에 답할 수 있다.
@@ -121,15 +121,20 @@ function todayKST(): string {
   }).format(new Date())
 }
 
+/** 생성용 시스템 프롬프트. 엔진이 달라도 같은 문장을 써야 엔진 비교가 성립한다. */
+export function answerSystem(weak = false): string {
+  const caution = weak
+    ? '\n\n주의: 아래 자료는 질문과 연관이 약합니다. 자료에 분명히 적힌 것만 짧게 답하고, 나머지는 자료에 없다고 밝히십시오.'
+    : ''
+  // 시간 컨텍스트는 한 줄로 짧게 (PRD §10). 길게 쓰면 모델이 그 문장을 답변에 베낀다.
+  return `${ANSWER_SYSTEM}${caution}\n\n오늘 날짜는 ${todayKST()}입니다. '지금', '올해' 같은 표현은 이 날짜를 기준으로 해석하십시오.`
+}
+
 export async function* answer(
   question: string,
   hits: Hit[],
   opts: { base?: string; signal?: AbortSignal; weak?: boolean } = {},
 ): AsyncGenerator<string> {
-  const caution = opts.weak
-    ? '\n\n주의: 아래 자료는 질문과 연관이 약합니다. 자료에 분명히 적힌 것만 짧게 답하고, 나머지는 자료에 없다고 밝히십시오.'
-    : ''
-
   const res = await fetch(`${opts.base ?? OLLAMA}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -139,12 +144,7 @@ export async function* answer(
       stream: true,
       options: { temperature: 0.2 },
       messages: [
-        // 시간 컨텍스트는 자료 앞에 둔다 (PRD §10). 한 줄로 짧게 —
-        // 문장을 길게 쓰면 모델이 그 문장을 답변에 베낀다.
-        {
-          role: 'system',
-          content: `${ANSWER_SYSTEM}${caution}\n\n오늘 날짜는 ${todayKST()}입니다. '지금', '올해' 같은 표현은 이 날짜를 기준으로 해석하십시오.`,
-        },
+        { role: 'system', content: answerSystem(opts.weak) },
         // ⚠️ [ID] 표기를 프롬프트 맨 끝으로 옮겨 봤다 (§12 회차 H).
         //    인용률은 0/2 → 2/2 로 올랐지만, 한 답변이 80자로 쪼그라들어
         //    본문이 사라지고 "[TPK-024]" 만 남았다. 끝에 둔 지시가 답변을 삼킨다.
